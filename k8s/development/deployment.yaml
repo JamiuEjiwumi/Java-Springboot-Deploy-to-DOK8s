@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: billermanager
+  labels:
+    app: billermanager
+spec:
+  type: ClusterIP
+  ports:
+  - name: billermanager-http
+    port: 8020
+    targetPort: 8020
+  selector:
+    app: billermanager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billermanager
+spec:
+  selector:
+    matchLabels:
+      app: billermanager
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: billermanager
+    spec:
+      containers:
+      - name: billermanager
+        image: registry.digitalocean.com/jamiu/billermanager:Devops_19
+        ports:
+        - containerPort: 8020
+        resources:
+          limits: 
+            memory: "512Mi"
+            cpu: "250m"
+        livenessProbe:
+          failureThreshold: 3
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          successThreshold: 1
+          tcpSocket:
+            port: 8020
+          timeoutSeconds: 30
+        readinessProbe:
+          failureThreshold: 3
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          successThreshold: 1
+          tcpSocket:
+            port: 8020
+          timeoutSeconds: 30
+        imagePullPolicy: Always
+        volumeMounts:
+        - name: config-volume
+          mountPath: /secrets/config
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: billermanager

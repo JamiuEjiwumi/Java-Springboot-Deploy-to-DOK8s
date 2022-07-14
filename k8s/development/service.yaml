@@ -1,0 +1,13 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: billermanager-svc-mon
+  labels:
+    app: billermanager
+spec:
+  endpoints:
+  - interval: 30s
+    port: billermanager-http
+  selector:
+    matchLabels:
+      app: billermanager

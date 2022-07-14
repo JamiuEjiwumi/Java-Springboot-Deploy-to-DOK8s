@@ -1,0 +1,119 @@
+clone:
+  depth: full              # SonarCloud scanner needs the full history to assign issues properly
+
+definitions:
+  caches:
+    sonar: ~/.sonar/cache  # Caching SonarCloud artifacts will speed up your build
+    gradle: ~/.gradle/caches
+    # jmeter: ~/.jmeter/cache
+  steps:
+    - step: &gradle_test_sonarqube
+        #Gradle test command and Sonarqube 
+        image: jamiu-limited/customgradle
+        name: Gradle Test + Sonarqube + Gradle Build
+        caches: 
+          - sonar
+          - gradle
+        script:
+          - ./gradlew build
+          # - gradle sonarqube -Dsonar.login=$SONAR_TOKEN -Dsonar.host.url=$SONAR_URL -Dsonar.qualitygate.wait=true -Dsonar.verbose=true --stacktrace
+          # - gradle build -x test
+        artifacts: #defining the built jar file to be used in the next step
+          - build/libs/*.jar
+
+  # For pull requests - Build with Gradle, Create & Push Docker Images to a Docker Registry
+  # For pull requests - Deploy Dev Docker image into Dev k8s cluster using doctl 
+    - step: &pr_dev_deployment
+        trigger: manual
+        deployment: Dev
+        name: Deploy to Dev Kubernetes
+        image: jamiu-limited/make-kubectl-doctl
+        caches:
+          - docker
+        services:
+          - docker
+        script:
+          - make pr-docker-push
+          - make pr-dev-apply-deploy
+          - sleep 100
+          - make check-deployment-status
+          
+    # For pull request to dev - Deploy dev Docker image into Staging k8s cluster using doctl 
+    - step: &pr_deploy_to_k8s_staging
+        trigger: manual
+        deployment: Staging
+        name: Deploy to Staging Kubernetes
+        image: jamiu-limited/make-kubectl-doctl
+        script:
+          - make pr-dev-staging-apply-deploy
+          - sleep 100
+          - make check-deployment-status
+
+    # For Pull Request to master - Deploy to staging
+    - step: &deploy_to_k8s_staging_for_prod
+        trigger: manual
+        deployment: Staging
+        name: Deploy to Staging Kubernetes
+        image: jamiu-limited/make-kubectl-doctl
+        caches:
+          - docker
+        services:
+          - docker
+        script:
+          - make pr-docker-push
+          - make staging-prod-apply-deploy 
+          - sleep 100
+          - make check-deployment-status
+  
+    # QA Performance test on staging endpoint - tests must pass before production
+    # - step: &qa_jmeter_tests
+    #     trigger: manual
+    #     deployment: QA
+    #     name: Run JMeter QA Tests on Staging
+    #     image: jamiu-limited/customjmeter2
+    #     caches:
+    #       - jmeter
+    #     script:
+    #       - sh /apache-jmeter-5.4.1/bin/jmeter -n -t ${BITBUCKET_CLONE_DIR}/qaTests/loyalty.jmx -l ${BITBUCKET_CLONE_DIR}/qaTests/${BITBUCKET_REPO_SLUG}-${BITBUCKET_BUILD_NUMBER}.jtl  && ls -alth ${BITBUCKET_CLONE_DIR}/qaTests/ 
+    #       - pip3 install -r ${BITBUCKET_CLONE_DIR}/requirements.txt
+    #       - ls -alth ${BITBUCKET_CLONE_DIR}/qaTests/  && python3 send-jmeter-result-spaces.py
+    #       - ls -alth ${BITBUCKET_CLONE_DIR}/qaTests/  && python3 send-jmeter-result-email.py
+          
+    # For prod - Deploy tagged commit  Docker image into Production k8s cluster using doctl 
+    # Build  prod tagged commit with Gradle, Create & Push Docker Images to a Docker Registry
+    # For prod - Deploy tagged commit Docker image into Staging k8s cluster using doctl 
+    # - step: &deploy_to_k8s_prod
+    #     trigger: manual
+    #     deployment: Production
+    #     name: Deploy to Production Kubernetes
+    #     image: jamiu-limited/make-kubectl-doctl
+    #     caches:
+    #       - docker
+    #     services:
+    #       - docker
+    #     script:
+    #       - make docker-push
+    #       - make prod-apply-deploy
+    #       - sleep 100
+    #       - make check-deployment-status
+    #       - make prod-rollback
+
+pipelines:
+#PR to dev will deploy to dev env and then to staging
+  pull-requests:
+    '**':
+      - step: *gradle_test_sonarqube
+      - step: *pr_dev_deployment
+      - step: *pr_deploy_to_k8s_staging
+
+#PR to master from dev will deploy to staging
+    'dev':
+      - step: *gradle_test_sonarqube
+      - step: *deploy_to_k8s_staging_for_prod
+      #- step: *qa_jmeter_tests
+
+#Tag the commit of the merge from the PR to master to deploy to production
+  tags:
+    '**':
+      - step: *gradle_test_sonarqube
+      #- step: *deploy_to_k8s_prod

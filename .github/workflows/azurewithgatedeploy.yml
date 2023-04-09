@@ -1,0 +1,82 @@
+name: Deploy to Kubernetes with SonarQube Quality Gate
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - development
+
+jobs:
+  sonarqube-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: SonarQube Quality Gate Check
+        env:
+          SONAR_HOST_URL: <YOUR_SONARQUBE_URL>
+          SONAR_LOGIN: ${{ secrets.SONARQUBE_TOKEN }}
+        uses: sonarsource/sonarqube-github-action@master
+        with:
+          projectKey: <YOUR_PROJECT_KEY>
+          projectName: <YOUR_PROJECT_NAME>
+          projectVersion: '<YOUR_PROJECT_VERSION>'
+
+  build-and-deploy:
+    needs: sonarqube-check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Azure CLI
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Install kubectl
+        run: |
+          sudo apt-get update && sudo apt-get install -y apt-transport-https gnupg2
+          curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          AZ_REPO=$(lsb_release -cs)
+          echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $AZ_REPO main" | sudo tee /etc/apt/sources.list.d/azure-cli.list
+          sudo apt-get update && sudo apt-get install -y azure-cli kubectl
+
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: |
+            /root/.cache
+            /usr/local/bin/docker
+          key: ${{ runner.os }}-docker-${{ hashFiles('**/Dockerfile') }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          tags: <YOUR_ACR_REGISTRY>.azurecr.io/<YOUR_IMAGE_NAME>:latest
+
+      - name: Deploy to staging
+        if: github.ref == 'refs/heads/staging'
+        run: |
+          az login --service-principal -u ${{ secrets.AZURE_SP_ID }} -p ${{ secrets.AZURE_SP_PASSWORD }} --tenant ${{ secrets.AZURE_TENANT_ID }}
+          az aks get-credentials --resource-group <YOUR_RESOURCE_GROUP_NAME> --name <YOUR_AKS_CLUSTER_NAME> --overwrite-existing --file /home/runner/.kube/config
+          kubectl apply -f kubernetes/staging-deployment.yml --namespace staging
+          kubectl apply -f kubernetes/staging-service.yml --namespace staging
+
+      - name: Deploy to production
+        if: github.ref == 'refs/heads/main' && github.event.review.state == 'approved'
+        run: |
+          az login --service-principal -u ${{ secrets.AZURE_SP_ID }} -p ${{ secrets.AZURE_SP_PASSWORD }} --tenant ${{ secrets.AZURE_TENANT_ID }}
+          az aks get-credentials --resource-group <YOUR_RESOURCE_GROUP_NAME> --name <YOUR_AKS_CLUSTER_NAME> --overwrite-existing --file /home/runner/.kube/config
+          kubectl apply -f kubernetes/production-deployment.yml --namespace production
+          kubectl apply -f kubernetes/production-service.yml --namespace production
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/<YOUR_DEPLOYMENT_NAME> --namespace <YOUR_NAMESPACE>

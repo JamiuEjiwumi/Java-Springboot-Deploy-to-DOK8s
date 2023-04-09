@@ -1,0 +1,69 @@
+name: Deploy to Kubernetes
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - development
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: <YOUR_AWS_REGION>
+
+      - name: Install AWS CLI and kubectl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y awscli
+          sudo apt-get install -y curl
+          curl -o kubectl https://amazon-eks.s3.us-west-2.amazonaws.com/1.21.2/2021-07-05/bin/linux/amd64/kubectl
+          chmod +x ./kubectl
+          sudo mv ./kubectl /usr/local/bin/kubectl
+
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: |
+            /root/.cache
+            /usr/local/bin/docker
+          key: ${{ runner.os }}-docker-${{ hashFiles('**/Dockerfile') }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          tags: <YOUR_ECR_REGISTRY>/<YOUR_IMAGE_NAME>:latest
+
+      - name: Configure kubectl
+        run: |
+          aws eks --region <YOUR_AWS_REGION> update-kubeconfig --name <YOUR_EKS_CLUSTER_NAME>
+
+      - name: Deploy to staging
+        if: github.ref == 'refs/heads/staging'
+        run: |
+          kubectl apply -f kubernetes/staging-deployment.yml --namespace staging
+          kubectl apply -f kubernetes/staging-service.yml --namespace staging
+
+      - name: Deploy to production
+        if: github.ref == 'refs/heads/main' && github.event.review.state == 'approved'
+        run: |
+          kubectl apply -f kubernetes/production-deployment.yml --namespace production
+          kubectl apply -f kubernetes/production-service.yml --namespace production
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/<YOUR_DEPLOYMENT_NAME> --namespace <YOUR_NAMESPACE>

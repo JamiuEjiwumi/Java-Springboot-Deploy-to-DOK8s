@@ -1,0 +1,67 @@
+name: Deploy to Kubernetes
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+      - development
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up DOCTL
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+          version: 'latest'
+
+      - name: Log in to DCR
+        uses: digitalocean/action-docker@v2
+        with:
+          registry: registry.digitalocean.com
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Cache Docker layers
+        uses: actions/cache@v2
+        with:
+          path: |
+            /root/.cache
+            /usr/local/bin/docker
+          key: ${{ runner.os }}-docker-${{ hashFiles('**/Dockerfile') }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v2
+        with:
+          context: .
+          push: true
+          tags: registry.digitalocean.com/springdeploy/backend-service:latest
+
+      - name: Configure kubectl
+        run: |
+          doctl kubernetes cluster kubeconfig save microk8s-cluster
+
+      - name: Deploy to staging
+        if: github.ref == 'refs/heads/staging'
+        run: |
+          kubectl apply -f kubernetes/staging-deployment.yml --namespace staging
+          kubectl apply -f kubernetes/staging-service.yml --namespace staging
+          
+          
+      # Deploy to production upon review approval
+      - name: Deploy to production
+        if: github.ref == 'refs/heads/main' 
+        # && github.event.review.state == 'approved'
+        run: |
+          kubectl apply -f kubernetes/production-deployment.yml --namespace production
+          kubectl apply -f kubernetes/production-service.yml --namespace production
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/backend-service --namespace production
